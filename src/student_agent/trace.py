@@ -16,6 +16,7 @@ class TraceWriter:
         self.path = path
         self.contracts = contracts
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.events: list[dict[str, Any]] = []
 
     def emit(
         self,
@@ -48,4 +49,5 @@ class TraceWriter:
         self.contracts.validate_trace(event, "trace event")
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+        self.events.append(event)
         return event
