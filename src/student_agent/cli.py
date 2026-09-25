@@ -218,8 +218,6 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("validate", help="validate outputs and observable trace")
     package = commands.add_parser("package", help="validate and build the submission ZIP")
     package.add_argument("--output", default="dist/submission.zip")
-    package.add_argument("--refine-claims", action="store_true",
-                         help="reassess claims from existing audited evidence")
     return result
 
 
@@ -251,8 +249,7 @@ def main() -> None:
             _, trace = validate_artifacts(root, case_set, contracts)
             print(f"OK: {len(case_set.case_ids)} outputs / {len(trace)} trace events")
         elif args.command == "package":
-            destination = package_submission(root, root / args.output,
-                                             refine_claims=args.refine_claims)
+            destination = package_submission(root, root / args.output)
             print(f"OK: {destination}")
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

@@ -86,19 +86,13 @@ def validate_artifacts(
     return outputs, normalized_lines
 
 
-def package_submission(root: Path, destination: Path, *, refine_claims: bool = False) -> Path:
+def package_submission(root: Path, destination: Path) -> Path:
     from .cases import load_case_set
 
     root = root.resolve()
     case_set = load_case_set(root)
     contracts = Contracts(root / "contracts" / "schemas")
     outputs, trace_lines = validate_artifacts(root, case_set, contracts)
-    if refine_claims:
-        from .refinement import refine_claims as reassess_claims
-
-        outputs, _ = reassess_claims(outputs, case_set.cases, trace_lines)
-        for case_id, output in outputs.items():
-            contracts.validate_output(output, f"refined outputs/{case_id}.json")
     manifest = build_manifest(case_set)
     contracts.validate_manifest(manifest)
 
