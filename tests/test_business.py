@@ -4,7 +4,13 @@ import asyncio
 from copy import deepcopy
 from pathlib import Path
 
-from student_agent.business import _payment, _select_order_snapshot, _shipment, investigate_case
+from student_agent.business import (
+    _claim_verdict,
+    _payment,
+    _select_order_snapshot,
+    _shipment,
+    investigate_case,
+)
 from student_agent.contracts import Contracts
 from student_agent.trace import TraceWriter
 
@@ -247,3 +253,48 @@ def test_policy_seller_is_reconciled_to_order_item_scope(tmp_path):
                    for conflict in report.data_conflicts)
         assert report.financial_resolution["recommended_refund_brl"] == 89.0
     asyncio.run(run())
+
+
+def test_full_refund_claim_uses_policy_entitlement_not_unverified_payout(tmp_path):
+    class MissingRefundGateway(Gateway):
+        async def call(self, name, **kwargs):
+            if name == "get_refund_timeline":
+                raise RuntimeError("refund timeline unavailable")
+            return await super().call(name, **kwargs)
+
+    async def run():
+        case = {"case_id": "L3B_CASE_009", "opened_at": "2018-02-02T09:00:00-03:00",
+                "customer_unique_id_hint": "customer", "candidate_order_ids": ["one"],
+                "customer_request": {"claims": [
+                    {"claim_id": "claim-a", "topic": "unavailable_order_paid"},
+                    {"claim_id": "claim-b", "topic": "requested_full_refund"},
+                ]}, "policy_version": "EC_POLICY_V2",
+                "investigation_scope": {"include_product_context": True}}
+        gateway = MissingRefundGateway()
+        gateway.data["get_customer_history"]["orders"][0]["order_status"] = "unavailable"
+        gateway.data["get_order"]["order_status"] = "unavailable"
+        gateway.data["get_policy"]["rules"]["unavailable_order_paid"] = {
+            "case_status": "action_required", "refund_brl": 89,
+            "recommended_action": "issue_refund", "responsible_parties": [],
+        }
+        contracts = Contracts(Path(__file__).resolve().parents[1] / "contracts/schemas")
+        report = await investigate_case(
+            case, gateway, TraceWriter(tmp_path / "trace.jsonl", contracts),
+        )
+        assert report.claim_assessments[1]["verdict"] == "supported"
+        assert report.payment_analysis["refunded_total_brl"] is None
+        assert report.financial_resolution["recommended_refund_brl"] == 0.0
+        assert report.assessment["case_status"] == "needs_investigation"
+    asyncio.run(run())
+
+
+def test_claim_verdicts_distinguish_negative_evidence():
+    assert _claim_verdict("unsupported_claim", "unsupported_claim", "on_time",
+                          "reconciled", 89.0, 0.0, "delivered", False) == "unsupported"
+    assert _claim_verdict("late_delivery_seller", "late_delivery_logistics",
+                          "logistics_delay", "reconciled", 89.0, 0.0,
+                          "delivered", False) == "unsupported"
+    assert _claim_verdict("refund_failed", "refund_pending", "on_time",
+                          "refund_pending", 89.0, 0.0, "delivered", False) == "unsupported"
+    assert _claim_verdict("valid_split_payment", "unsupported_claim", "on_time",
+                          "reconciled", 89.0, 0.0, "delivered", False) == "unsupported"

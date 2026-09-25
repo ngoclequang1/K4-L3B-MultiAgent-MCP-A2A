@@ -271,21 +271,49 @@ def _payment(
 
 
 def _claim_verdict(topic: str, issue: str, shipment: str, payment: str,
-                   captured: float | None, refund: float | None) -> str:
+                   captured: float | None, policy_refund: float | None,
+                   order_status: str | None, split_payment_valid: bool) -> str:
     if issue == "insufficient_evidence":
         return "insufficient_evidence"
     if topic == "requested_full_refund":
-        if captured is None or refund is None:
+        if captured is None or policy_refund is None:
             return "insufficient_evidence"
-        return "supported" if refund >= captured and captured > 0 else "unsupported"
+        return "supported" if policy_refund >= captured and captured > 0 else "unsupported"
+    if topic == "unsupported_claim":
+        return "unsupported" if issue == "unsupported_claim" else "insufficient_evidence"
+    if topic in {"canceled_order_paid", "unavailable_order_paid"}:
+        if captured is None or order_status is None:
+            return "insufficient_evidence"
+        relevant = ({"canceled", "cancelled"} if topic == "canceled_order_paid"
+                    else {"unavailable", "unavailable_order"})
+        return "supported" if order_status in relevant and captured > 0 else "unsupported"
     if topic == issue:
         return "supported"
     if topic in {"late_delivery_seller", "late_delivery_logistics"}:
-        return "unsupported" if shipment == "on_time" else "insufficient_evidence"
-    if topic in {"refund_pending", "refund_failed", "payment_mismatch", "duplicate_charge"}:
-        return "unsupported" if payment == "reconciled" else "insufficient_evidence"
+        expected = "seller_delay" if topic == "late_delivery_seller" else "logistics_delay"
+        if shipment == expected:
+            return "supported"
+        return "unsupported" if shipment in {
+            "on_time", "seller_delay", "logistics_delay",
+        } else "insufficient_evidence"
+    if topic in {"refund_pending", "refund_failed"}:
+        if payment == topic:
+            return "supported"
+        return "unsupported" if payment in {
+            "reconciled", "refunded", "refund_pending", "refund_failed",
+        } else "insufficient_evidence"
+    if topic == "payment_mismatch":
+        return "supported" if payment == "capture_mismatch" else (
+            "unsupported" if payment == "reconciled" else "insufficient_evidence"
+        )
+    if topic == "duplicate_charge":
+        return "supported" if payment == "duplicate_capture" else (
+            "unsupported" if payment == "reconciled" else "insufficient_evidence"
+        )
     if topic == "valid_split_payment":
-        return "insufficient_evidence"
+        if split_payment_valid:
+            return "supported"
+        return "unsupported" if payment == "reconciled" else "insufficient_evidence"
     return "insufficient_evidence"
 
 
@@ -488,7 +516,8 @@ async def investigate_case(
         else:
             party["party_type"] = "unknown"
             party["party_id"] = None
-    refund_amount = _money(rule.get("refund_brl")) if isinstance(rule, dict) else None
+    policy_refund = _money(rule.get("refund_brl")) if isinstance(rule, dict) else None
+    refund_amount = policy_refund
     action = rule.get("recommended_action") if isinstance(rule, dict) else None
     if isinstance(rule, dict) and rule.get("case_status") in {
         "action_required", "no_action", "needs_investigation"
@@ -503,6 +532,7 @@ async def investigate_case(
         conflicts.append(_conflict("recommended_refund_brl", "get_policy",
                                    "get_payment_timeline", None, "REFUND_EXCEEDS_CAPTURE"))
         refund_amount = None
+        policy_refund = None
         status = "needs_investigation"
     if refund_amount is not None and refund_amount > 0 and captured is None:
         notes.append("Cannot recommend payment without a verified captured amount")
@@ -583,10 +613,10 @@ async def investigate_case(
         else:
             relevant.extend(domain_refs[name] for name in (
                 "get_order", "get_policy") if name in domain_refs)
-        verdict = _claim_verdict(topic, issue, shipment_verdict, payment_verdict,
-                                 captured, _float(refund_amount))
-        if topic == "valid_split_payment" and payment["_split_payment_valid"]:
-            verdict = "supported"
+        verdict = _claim_verdict(
+            topic, issue, shipment_verdict, payment_verdict, captured,
+            _float(policy_refund), order_status, payment["_split_payment_valid"],
+        )
         claims.append({"claim_id": claim["claim_id"], "verdict": verdict,
                        "confidence": confidence if verdict != "insufficient_evidence" else 0.0,
                        "evidence_refs": list(dict.fromkeys(relevant))})
